@@ -1,1 +1,5 @@
-
+streamlit 
+groq
+pypdf
+python-docx
+yt-dlp
