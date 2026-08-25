@@ -91,7 +91,19 @@ def get_yt_transcript(url):
                     if text.strip():
                         return text
     raise ValueError("No subtitles found for the provided YouTube URL.")
-
+    if yt_url:
+        if st.button("Extract text from YouTube video", key="yt btn"):
+            with st.spinner("Extracting text from YouTube video..."):
+                try:
+                    transcript = get_yt_transcript(yt_url)
+                    if not transcript or len(transcript.strip()) < 5:
+                        st.error("No text was extracted from the YouTube video.")
+                    else:
+                        st.subheader("Extracted Text")
+                        st.write(transcript)
+                        st.download_button("Download Extracted Text", transcript, file_name="extracted_text.txt")
+                except Exception as e:
+                    st.error(f"Error extracting text from YouTube video: {e}")
                         
                     
 
