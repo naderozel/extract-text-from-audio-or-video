@@ -1,108 +1,143 @@
 import streamlit as st
 from groq import Groq
-import tempfile, os, re, subprocess, json
+import tempfile, os, re, subprocess, json, shutil
 
-
-st.title("extract text from audio or video")
+st.set_page_config(page_title="Transcriber", page_icon="🎙️")
+st.title("🎙️ Extract Text from Audio, Video & YouTube")
 
 client = Groq(api_key=st.secrets["GROQ_API_KEY"])
-st.write("Upload your audio or video file below")
-uploaded_file = st.file_uploader("Upload your file", type=["mp3", "wav", "mp4", "avi"])
 
-def transcribe_audio_file(path): 
+def transcribe_audio_file(path):
     with open(path, "rb") as f:
-        transcript = client.audio.transcribe(
+        return client.audio.transcriptions.create(
             model="whisper-large-v3",
             file=(os.path.basename(path), f),
-            response_format="text"        
+            response_format="text"
         )
-        return transcript
 
-if uploaded_file :
-    if uploaded_file.size / 1024**2 > 25:
-        st.error("File size exceeds 25MB. Please upload a smaller file.")
-    elif st.button("extract text", key="file btn"):
-        with st.spinner("Extracting text from audio/video..."):
-            ext = os.path.splitext(uploaded_file.name)[-1].lower()
-            with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as temp_file:
-                temp_file.write(uploaded_file.read())
-                temp_file_path = temp_file.name
-            try:
-                transcript = transcribe_audio_file(temp_file_path)
-            finally:
-                os.unlink(temp_file_path)    
-        if not transcript or len(transcript.strip()) < 5:
-            st.error("No text was extracted from the audio/video file.")
-        else:
-            st.subheader("Extracted Text")
-            st.write(transcript)
-            st.download_button("Download Extracted Text", transcript, file_name="extracted_text.txt")
-
-          
-st.markdown(" ---")
-st.markdown("youtube video")
-st.caption("You can also extract text from a YouTube video by providing the video URL below.")
-yt_url = st.text_input("Enter YouTube video URL", placeholder="https://www.youtube.com/watch?v=example")
-
-
+def extract_audio_from_video(video_path):
+    audio_file = tempfile.NamedTemporaryFile(delete=False, suffix=".wav")
+    audio_path = audio_file.name
+    audio_file.close()
+    command = ["ffmpeg", "-y", "-i", video_path, "-vn", "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1", audio_path]
+    result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    if result.returncode != 0:
+        if os.path.exists(audio_path):
+            os.unlink(audio_path)
+        raise RuntimeError("FFmpeg error: " + result.stderr[-1000:])
+    return audio_path
 
 def parse_json3_sub(path):
     with open(path, "r", encoding="utf-8") as f:
         data = json.load(f)
-        lines = []
-        for event in data.get("events", []):
-            for seg in event.get("segs", []):
-                word = seg.get("utf8", "").strip()
-                if word and word != "\n":
-                    lines.append(word)
-        full_text = " ".join(lines)
-        return re.sub(r"\s+", " ", full_text).strip()
-
+    lines = []
+    for event in data.get("events", []):
+        for seg in event.get("segs", []):
+            word = seg.get("utf8", "").strip()
+            if word and word != "\n":
+                lines.append(word)
+    return re.sub(r"\s+", " ", " ".join(lines)).strip()
 
 def get_yt_transcript(url):
     tmp_dir = tempfile.mkdtemp()
-    output_path = os.path.join(tmp_dir, "subs")
-    for lang in ["ar", "en",""]:
-        cmd = [
-            "yt-dlp",
-            "--no-playslist",
-            "--skip-download",
-            "--write-subs",
-            "--write-auto-subs",
-            "--sub-format", "json3",
-            "-o", output_path,
+    try:
+        output_path = os.path.join(tmp_dir, "subs")
+        for lang in ["ar", "en", None]:
+            command = [
+                "yt-dlp", "--no-playlist", "--skip-download",
+                "--write-subs", "--write-auto-subs",
+                "--sub-format", "json3", "-o", output_path
+            ]
+            if lang:
+                command += ["--sub-lang", lang]
+            command.append(url)
+            subprocess.run(command, capture_output=True, text=True)
+            for filename in os.listdir(tmp_dir):
+                if filename.endswith(".json3"):
+                    text = parse_json3_sub(os.path.join(tmp_dir, filename))
+                    if text:
+                        return text
+        raise ValueError("No subtitles found for this YouTube video.")
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
 
+# Audio / Video
+st.header("📁 Audio / Video")
+uploaded_file = st.file_uploader(
+    "Upload your file",
+    type=["mp3", "wav", "m4a", "ogg", "flac", "mp4", "avi", "mov", "mkv"]
+)
 
-        ]
-        if lang:
-            cmd += ["--sub-lang", lang]
-        cmd.append(url)
-        subprocess.run(cmd, capture_output=True, text=True)
-
-        for f in os.listdir(tmp_dir):
-            if f.endswith(".json3"):
-                sub_path = os.path.join(tmp_dir, f)
-                text = parse_json3_sub(sub_path)
-                for file in os.listdir(tmp_dir):
-                    try:
-                        os.unlink(os.path.join(tmp_dir, file)) 
-                    except :
-                        pass
-                if text.strip():
-                    return text
-    raise ValueError("No subtitles found for the provided YouTube URL.")
-
-if st.button("extract text from youtube", key="yt btn"):
-    transcript = None
-    with st.spinner("Extracting text from YouTube video..."):
+if uploaded_file:
+    file_size_mb = uploaded_file.size / 1024**2
+    if file_size_mb > 25:
+        st.error("File size exceeds 25MB. Please upload a smaller file.")
+    elif st.button("🎙️ Extract Text", key="file_btn"):
+        temp_file_path = None
+        audio_path = None
         try:
-            transcript = get_yt_transcript(yt_url)
+            with st.spinner("Extracting text..."):
+                ext = os.path.splitext(uploaded_file.name)[1].lower()
+                with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as temp_file:
+                    temp_file.write(uploaded_file.getbuffer())
+                    temp_file_path = temp_file.name
+                audio_extensions = [".mp3", ".wav", ".m4a", ".ogg", ".flac"]
+                if ext in audio_extensions:
+                    audio_path = temp_file_path
+                else:
+                    audio_path = extract_audio_from_video(temp_file_path)
+                transcript = transcribe_audio_file(audio_path)
+            if not transcript or len(transcript.strip()) < 5:
+                st.error("No text was extracted.")
+            else:
+                st.subheader("📄 Extracted Text")
+                st.text_area("Transcript", transcript, height=400)
+                st.download_button(
+                    "⬇️ Download Text",
+                    transcript,
+                    file_name="extracted_text.txt",
+                    mime="text/plain"
+                )
         except Exception as e:
-            st.error(f"Error extracting text: {e}")
+            st.error(f"Error: {e}")
+        finally:
+            if temp_file_path and os.path.exists(temp_file_path):
+                os.unlink(temp_file_path)
+            if audio_path and audio_path != temp_file_path and os.path.exists(audio_path):
+                os.unlink(audio_path)
 
-    if not transcript or len(transcript.strip()) < 5:
-        st.error("No text was extracted from the YouTube video.")
+# YouTube
+st.divider()
+st.header("▶️ YouTube")
+st.caption("Enter a YouTube URL to extract its subtitles.")
+yt_url = st.text_input(
+    "YouTube URL",
+    placeholder="https://www.youtube.com/watch?v=example"
+)
+
+def is_youtube_url(url):
+    pattern = r"^(https?://)?(www\.)?(youtube\.com/watch\?v=|youtu\.be/)[\w-]+"
+    return re.match(pattern, url.strip()) is not None
+
+if st.button("🎬 Extract YouTube Text", key="yt_btn"):
+    if not yt_url.strip():
+        st.warning("Please enter a YouTube URL.")
+    elif not is_youtube_url(yt_url):
+        st.error("Please enter a valid YouTube URL.")
     else:
-        st.subheader("Extracted Text")
-        st.write(transcript)
-        st.download_button("Download Extracted Text", transcript, file_name="extracted_text.txt")
+        with st.spinner("Extracting YouTube subtitles..."):
+            try:
+                transcript = get_yt_transcript(yt_url.strip())
+                if not transcript or len(transcript.strip()) < 5:
+                    st.error("No text was extracted from the YouTube video.")
+                else:
+                    st.subheader("📄 YouTube Transcript")
+                    st.text_area("Transcript", transcript, height=400)
+                    st.download_button(
+                        "⬇️ Download Text",
+                        transcript,
+                        file_name="youtube_transcript.txt",
+                        mime="text/plain"
+                    )
+            except Exception as e:
+                st.error(f"Error: {e}")
